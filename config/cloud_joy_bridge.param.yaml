@@ -1,0 +1,16 @@
+/**:
+  ros__parameters:
+    mqtt:
+      host: ""                 # broker hostname, e.g. broker.example.com
+      port: 8883               # 8883 = MQTT over TLS
+      transport: tcp           # tcp or websockets
+      tls: true
+      ca_file: ""              # empty = system CA store
+      username: ""
+      password_env: JOY_MQTT_PASSWORD   # the password is read from this environment variable
+      topic: ""                # must match the topic on the operator page
+      client_id: ""            # empty = generated
+    publish_rate: 20.0         # /joy rate on the vehicle (Hz)
+    link_timeout: 0.5          # s without operator input before the vehicle is stopped
+    stop_publish_after: 3.0    # s without operator input before /joy stops entirely
+    deadzone: 0.05

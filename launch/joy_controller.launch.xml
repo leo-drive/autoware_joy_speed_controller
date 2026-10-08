@@ -14,6 +14,8 @@
   <arg name="output_vehicle_engage" default="/vehicle/engage"/>
 
   <arg name="launch_vehicle_interface" default="true" description="Autoware zaten vehicle interface'i başlatıyorsa false yapın"/>
+  <arg name="input_source" default="local" description="local: joystick bu bilgisayara bağlı (joy_node), cloud: joystick MQTT üzerinden gelir (cloud_joy_bridge)"/>
+  <arg name="cloud_bridge_config_file" default="$(find-pkg-share autoware_joy_speed_controller)/config/cloud_joy_bridge.param.yaml"/>
 
   <arg name="config_file" default="$(find-pkg-share autoware_joy_speed_controller)/config/joy_controller_ds4.param.yaml"/>
 
@@ -36,10 +38,16 @@
     <param from="$(var config_file)" allow_substs="true"/>
   </node>
 
-  <!-- joy_node -->
-  <node pkg="joy" exec="joy_node" name="joy_node" output="screen">
+  <!-- joy_node: joystick plugged into this computer -->
+  <node pkg="joy" exec="joy_node" name="joy_node" output="screen" if="$(eval '\'$(var input_source)\' == \'local\'')">
     <param name="autorepeat_rate" value="20.0"/>
     <param name="deadzone" value="0.05"/>
+  </node>
+
+  <!-- cloud_joy_bridge: joystick state from the operator page over MQTT -->
+  <node pkg="autoware_joy_speed_controller" exec="cloud_joy_bridge.py" name="cloud_joy_bridge" output="screen" if="$(eval '\'$(var input_source)\' == \'cloud\'')">
+    <remap from="output/joy" to="$(var input_joy)"/>
+    <param from="$(var cloud_bridge_config_file)"/>
   </node>
 
   <!-- ~/autoware içindeki golf vehicle interface'ini (rbf_mqb_evo) dahil et -->

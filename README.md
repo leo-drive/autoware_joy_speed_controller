@@ -87,3 +87,52 @@ ros2 launch autoware_joy_speed_controller joy_controller.launch.xml config_file:
 | Vehicle Disengage    | SHARE + △                  |
 
 Buttons act once per press. Releasing R2 drops the target velocity to zero, and so does any gear change.
+
+## Remote Driving over MQTT
+
+The joystick can be plugged into any computer with a browser; its state reaches
+the vehicle through an MQTT broker. The speed controller and all safety checks
+keep running on the vehicle.
+
+```text
+DS4 -> browser (web/operator.html) -> MQTT broker -> cloud_joy_bridge -> /joy -> joy_speed_controller -> vehicle interface
+```
+
+### Broker requirements
+
+- A TLS listener for the vehicle (MQTT, e.g. port 8883) and a secure WebSocket
+  listener for the browser (WSS).
+- Authentication, and an ACL that allows only the operator account to publish to
+  the joystick topic. Anyone who can publish there can drive the vehicle.
+
+### Vehicle
+
+```bash
+sudo apt install python3-paho-mqtt
+# set mqtt.host and mqtt.topic in config/cloud_joy_bridge.param.yaml (or a copy of it)
+export JOY_MQTT_PASSWORD='...'
+ros2 launch autoware_joy_speed_controller joy_controller.launch.xml \
+  input_source:=cloud cloud_bridge_config_file:=/path/to/cloud_joy_bridge.param.yaml
+```
+
+### Operator
+
+Serve the page from localhost (the Gamepad API needs a secure context) and open
+it in Chrome or Edge:
+
+```bash
+cd web && python3 -m http.server 8000
+# open http://localhost:8000/operator.html, enter the wss:// broker URL, topic and credentials
+```
+
+### Link loss
+
+| Time without operator input | Vehicle behavior                                                        |
+| --------------------------- | ----------------------------------------------------------------------- |
+| up to `link_timeout` (0.5 s) | latest operator state is used                                           |
+| up to `stop_publish_after` (3 s) | neutral state (R2 released): zero velocity command, controlled stop |
+| longer                      | `/joy` stops; the vehicle interface falls back to PARK + emergency       |
+
+The page stops sending when its tab is hidden. Only one operator page is
+accepted at a time; another page can take over once the active one has been
+silent for `link_timeout`. Retained and out-of-order messages are dropped.

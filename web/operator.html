@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Joystick Operatör</title>
+<script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1b1f24; --muted: #5d6673;
+    --border: #d9dde3; --ok: #1f8a4c; --warn: #b7791f; --bad: #c53030; --accent: #2f6fde;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #12151a; --panel: #1b2027; --text: #e6e9ee; --muted: #9aa4b2;
+      --border: #2d343e; --ok: #48bb78; --warn: #ecc94b; --bad: #fc8181; --accent: #6ea0ff;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 20px; margin: 4px 0 12px; }
+  section { background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+            padding: 14px 16px; margin-bottom: 12px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 10px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+  input { width: 100%; padding: 8px 10px; margin-top: 3px; border: 1px solid var(--border);
+          border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0 14px; }
+  button { font: inherit; padding: 9px 16px; border-radius: 8px; border: 1px solid var(--border);
+           background: var(--panel); color: var(--text); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.stop { background: var(--bad); border-color: var(--bad); color: #fff; font-weight: 600; width: 100%;
+                padding: 16px; font-size: 18px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 13px; font-weight: 600;
+          border: 1px solid currentColor; }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+  .status { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+  .kv { font-size: 13px; color: var(--muted); }
+  .kv b { display: block; font-size: 17px; color: var(--text); font-variant-numeric: tabular-nums; }
+  .hint { font-size: 13px; color: var(--muted); margin: 8px 0 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  td { padding: 4px 0; border-bottom: 1px solid var(--border); }
+  td:first-child { width: 45%; font-weight: 600; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Joystick Operatör</h1>
+
+  <section>
+    <h2>Bağlantı</h2>
+    <div class="grid">
+      <label>Broker (WebSocket, wss://)
+        <input id="url" placeholder="wss://broker.example.com:8884/mqtt" autocomplete="off">
+      </label>
+      <label>Topic
+        <input id="topic" placeholder="golf/vehicle1/joy" autocomplete="off">
+      </label>
+      <label>Kullanıcı adı
+        <input id="user" autocomplete="username">
+      </label>
+      <label>Şifre
+        <input id="pass" type="password" autocomplete="current-password">
+      </label>
+    </div>
+    <div class="row">
+      <button id="connect" class="primary">Bağlan</button>
+      <button id="disconnect">Bağlantıyı kes</button>
+      <span id="mqttState" class="pill bad">bağlı değil</span>
+    </div>
+  </section>
+
+  <section>
+    <button id="stop" class="stop">DURDUR (Boşluk)</button>
+    <p class="hint">Durdur'a basınca sayfa "hiçbir tuş basılı değil" gönderir; R2 bırakılmış sayılır ve araç durur.
+      Tekrar sürmek için <b>Devam</b>'a basın. Sekme arka plana alınırsa gönderim kesilir, araç ~0.5 s içinde durur.</p>
+  </section>
+
+  <section>
+    <h2>Durum</h2>
+    <div class="status">
+      <div class="kv">Kumanda<b id="gpState">bağlı değil</b></div>
+      <div class="kv">Gönderim<b id="sendState">durdu</b></div>
+      <div class="kv">Mesaj/s<b id="rate">0</b></div>
+      <div class="kv">R2 (ölü adam)<b id="deadman">bırakıldı</b></div>
+      <div class="kv">Hız tuşu<b id="speedKey">-</b></div>
+      <div class="kv">Direksiyon<b id="steer">0.00</b></div>
+    </div>
+    <p class="hint" id="gpHint">Kumandayı USB veya Bluetooth ile bağlayıp herhangi bir tuşa basın.</p>
+  </section>
+
+  <section>
+    <h2>Tuşlar (DS4)</h2>
+    <table>
+      <tr><td>R2 basılı tut</td><td>Ölü adam tuşu — bırakınca araç durur</td></tr>
+      <tr><td>R2 + Kare</td><td>Hızlan</td></tr>
+      <tr><td>R2 + Çarpı</td><td>Yavaşla</td></tr>
+      <tr><td>Sol çubuk</td><td>Direksiyon</td></tr>
+      <tr><td>D-pad sağ / sol</td><td>DRIVE / REVERSE</td></tr>
+      <tr><td>D-pad yukarı / aşağı</td><td>Vites kademe P → R → N → D</td></tr>
+      <tr><td>PS</td><td>Acil durum aç</td></tr>
+      <tr><td>Share + PS</td><td>Acil durumu kapat</td></tr>
+    </table>
+  </section>
+</main>
+
+<script>
+(() => {
+  const SEND_HZ = 30;
+  const $ = (id) => document.getElementById(id);
+  const session = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2)).replace(/-/g, "");
+  let client = null;
+  let seq = 0;
+  let stopped = true;
+  let sentThisSecond = 0;
+
+  // Remember connection fields (never the password)
+  const store = {
+    get(k) { try { return localStorage.getItem(k) || ""; } catch (e) { return ""; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
+  };
+  for (const k of ["url", "topic", "user"]) {
+    $(k).value = store.get("joy_" + k);
+    $(k).addEventListener("change", () => store.set("joy_" + k, $(k).value.trim()));
+  }
+
+  function setPill(el, text, cls) { el.textContent = text; el.className = "pill " + cls; }
+
+  $("connect").onclick = () => {
+    const url = $("url").value.trim();
+    if (!url.startsWith("wss://") && !url.startsWith("ws://")) {
+      alert("Broker adresi wss:// ile başlamalı.");
+      return;
+    }
+    if (url.startsWith("ws://") && !confirm("ws:// şifresiz bağlantıdır; komutlar açık metin gider. Devam edilsin mi?")) return;
+    if (client) client.end(true);
+    client = mqtt.connect(url, {
+      username: $("user").value.trim() || undefined,
+      password: $("pass").value || undefined,
+      clientId: "joy_operator_" + session.slice(0, 12),
+      clean: true,
+      reconnectPeriod: 1000,
+      connectTimeout: 5000,
+      keepalive: 10,
+    });
+    setPill($("mqttState"), "bağlanıyor…", "warn");
+    client.on("connect", () => setPill($("mqttState"), "bağlı", "ok"));
+    client.on("reconnect", () => setPill($("mqttState"), "yeniden bağlanıyor…", "warn"));
+    client.on("close", () => setPill($("mqttState"), "bağlı değil", "bad"));
+    client.on("error", (e) => setPill($("mqttState"), "hata: " + e.message, "bad"));
+  };
+  $("disconnect").onclick = () => { if (client) client.end(true); client = null; setPill($("mqttState"), "bağlı değil", "bad"); };
+
+  function setStopped(v) {
+    stopped = v;
+    $("stop").textContent = v ? "DEVAM" : "DURDUR (Boşluk)";
+    $("stop").className = v ? "primary" : "stop";
+    if (v) $("stop").style.cssText = "width:100%;padding:16px;font-size:18px;font-weight:600";
+    else $("stop").style.cssText = "";
+  }
+  $("stop").onclick = () => setStopped(!stopped);
+  document.addEventListener("keydown", (e) => {
+    if (e.code === "Space" && e.target.tagName !== "INPUT") { e.preventDefault(); setStopped(true); }
+  });
+  setStopped(true);
+
+  function pickGamepad() {
+    const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()).filter(Boolean) : [];
+    return pads.find((p) => p.connected) || null;
+  }
+
+  function tick() {
+    const gp = pickGamepad();
+    if (!gp) {
+      $("gpState").textContent = "bağlı değil";
+      $("gpHint").textContent = "Kumandayı USB veya Bluetooth ile bağlayıp herhangi bir tuşa basın.";
+    } else {
+      $("gpState").textContent = gp.mapping === "standard" ? "hazır" : "desteklenmiyor";
+      $("gpHint").textContent = gp.mapping === "standard"
+        ? gp.id
+        : "Tarayıcı bu kumanda için standart tuş düzeni vermiyor (" + gp.id + "). Chrome veya Edge deneyin.";
+    }
+
+    const usable = gp && gp.mapping === "standard";
+    const linkUp = client && client.connected && $("topic").value.trim() !== "";
+    const hidden = document.hidden;
+
+    let axes = [0, 0, 0, 0];
+    let buttons = new Array(17).fill(0);
+    if (usable && !stopped) {
+      axes = gp.axes.slice(0, 4).map((v) => Number(v) || 0);
+      buttons = Array.from({ length: 17 }, (_, i) => (gp.buttons[i] ? gp.buttons[i].value : 0));
+    }
+
+    // Live view
+    $("deadman").textContent = buttons[7] >= 0.5 ? "BASILI" : "bırakıldı";
+    $("deadman").className = buttons[7] >= 0.5 ? "ok" : "";
+    $("speedKey").textContent = buttons[2] >= 0.5 ? "Kare (hızlan)" : buttons[0] >= 0.5 ? "Çarpı (yavaşla)" : "-";
+    $("steer").textContent = (-axes[0]).toFixed(2);
+
+    let state;
+    if (!linkUp) state = "MQTT bağlı değil";
+    else if (hidden) state = "sekme arka planda";
+    else if (!usable) state = "kumanda yok";
+    else state = stopped ? "DURDURULDU (nötr gönderiliyor)" : "gönderiliyor";
+    $("sendState").textContent = state;
+    $("sendState").className = state === "gönderiliyor" ? "ok" : stopped && linkUp && usable && !hidden ? "warn" : "bad";
+
+    // Send only while the page is visible and a usable pad is present; if this
+    // page stops sending, the vehicle bridge stops the vehicle.
+    if (linkUp && !hidden && usable) {
+      const msg = { v: 1, session, seq: seq++, mapping: "standard", axes, buttons };
+      client.publish($("topic").value.trim(), JSON.stringify(msg), { qos: 0, retain: false });
+      sentThisSecond++;
+    }
+  }
+
+  setInterval(tick, 1000 / SEND_HZ);
+  setInterval(() => { $("rate").textContent = sentThisSecond; sentThisSecond = 0; }, 1000);
+  window.addEventListener("gamepadconnected", tick);
+})();
+</script>
+</body>
+</html>
