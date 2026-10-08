@@ -151,34 +151,52 @@ void AutowareJoyControllerNode::onJoy() {
     joy_ = std::make_shared<const P65JoyConverter>(*msg);
   }
 
-  if (joy_->shift_up() || joy_->shift_down() || joy_->shift_drive() ||
-      joy_->shift_reverse()) {
-    publishShift();
+  // takeData() keeps returning the last message, so onJoy() sees a held button
+  // on every tick. Act only on the rising edge so a button fires once per
+  // press. The first message is the baseline: a button already held at
+  // startup does not fire.
+  const auto prev = prev_joy_;
+  prev_joy_ = joy_;
+  const auto pressed = [&](bool (JoyConverterBase::*button)() const) {
+    return prev && (joy_.get()->*button)() && !(prev.get()->*button)();
+  };
+
+  if (pressed(&JoyConverterBase::shift_drive)) {
+    publishShift(GearShift::DRIVE);
+  } else if (pressed(&JoyConverterBase::shift_reverse)) {
+    publishShift(GearShift::REVERSE);
+  } else if (pressed(&JoyConverterBase::shift_up)) {
+    publishShift(getUpperShift(prev_shift_));
+  } else if (pressed(&JoyConverterBase::shift_down)) {
+    publishShift(getLowerShift(prev_shift_));
   }
 
-  if (joy_->turn_signal_left() || joy_->turn_signal_right() ||
-      joy_->clear_turn_signal()) {
+  if (pressed(&JoyConverterBase::turn_signal_left) ||
+      pressed(&JoyConverterBase::turn_signal_right) ||
+      pressed(&JoyConverterBase::clear_turn_signal)) {
     publishTurnSignal();
   }
 
-  if (joy_->gate_mode()) {
+  if (pressed(&JoyConverterBase::gate_mode)) {
     publishGateMode();
   }
 
-  if (joy_->autoware_engage() || joy_->autoware_disengage()) {
+  if (pressed(&JoyConverterBase::autoware_engage) ||
+      pressed(&JoyConverterBase::autoware_disengage)) {
     publishAutowareEngage();
   }
 
-  if (joy_->vehicle_engage() || joy_->vehicle_disengage()) {
+  if (pressed(&JoyConverterBase::vehicle_engage) ||
+      pressed(&JoyConverterBase::vehicle_disengage)) {
     publishVehicleEngage();
   }
 
-  if (joy_->emergency_stop()) {
-    sendEmergencyRequest(true);
-  }
-
-  if (joy_->clear_emergency_stop()) {
+  // The clear combo (e.g. Share+PS) also contains the stop button, so check it
+  // first. The stop button only ever sets the emergency, never clears it.
+  if (pressed(&JoyConverterBase::clear_emergency_stop)) {
     sendEmergencyRequest(false);
+  } else if (pressed(&JoyConverterBase::emergency_stop)) {
+    sendEmergencyRequest(true);
   }
 }
 
@@ -211,8 +229,46 @@ void AutowareJoyControllerNode::onTimer() {
     return;
   }
 
-  publishControlCommand();
+  updateControlCommand();
   publishHeartbeat();
+}
+
+// Republish the latest command at publish_rate so the vehicle interface's
+// command rate monitor (control_cmd / emergency_cmd) stays satisfied, while
+// the joystick logic above keeps running at update_rate.
+void AutowareJoyControllerNode::onPublishTimer() {
+  if (!isDataReady()) {
+    return;
+  }
+
+  updateSteering();
+  publishControlCommand();
+  publishEmergency();
+}
+
+// Runs at publish_rate so the steering command moves in small steps instead of
+// jumping once per update_rate tick.
+void AutowareJoyControllerNode::updateSteering() {
+  const double dt = 1.0 / publish_rate_;
+
+  // Expo curve: fine control around the center, full angle at the end stop.
+  const double stick = std::clamp(static_cast<double>(joy_->steer()), -1.0, 1.0);
+  const double shaped =
+      (1.0 - steer_expo_) * stick + steer_expo_ * stick * stick * stick;
+
+  // First-order low-pass so the command eases in and out of a turn.
+  const double alpha =
+      steer_time_constant_ > 0.0 ? dt / (steer_time_constant_ + dt) : 1.0;
+  target_steering_angle_ +=
+      alpha * (steer_ratio_ * shaped - target_steering_angle_);
+
+  // steer_rate is the maximum steering speed in rad/s.
+  const double max_step = steer_rate_ * dt;
+  set_steering_angle_ += std::clamp(target_steering_angle_ - set_steering_angle_,
+                                    -max_step, max_step);
+
+  cmd.lateral.steering_tire_angle = set_steering_angle_;
+  cmd.lateral.steering_tire_rotation_rate = steering_angle_velocity_;
 }
 
 float AutowareJoyControllerNode::exponentialSmooth(float currentVelocity,
@@ -242,29 +298,21 @@ float AutowareJoyControllerNode::exponentialSmooth(float currentVelocity,
   }
 }
 
-void AutowareJoyControllerNode::publishControlCommand() {
-
-  cmd.stamp = this->now();
+void AutowareJoyControllerNode::updateControlCommand() {
   {
 
-    target_steering_angle_ = steer_ratio_ * joy_->steer();
-    if (std::abs(target_steering_angle_ - set_steering_angle_) < steer_rate_) {
-      set_steering_angle_ = target_steering_angle_;
-    } else if (set_steering_angle_ < target_steering_angle_) {
-      set_steering_angle_ += steer_rate_;
-    } else if (set_steering_angle_ > target_steering_angle_) {
-      set_steering_angle_ -= steer_rate_;
-    }
-    cmd.lateral.steering_tire_angle = set_steering_angle_;
-    cmd.lateral.steering_tire_rotation_rate = steering_angle_velocity_;
+    // velocity_gain / brake_gain are in m/s per second of holding the button,
+    // independent of update_rate.
+    const double velocity_step = velocity_gain_ / update_rate_;
+    const double brake_step = brake_gain_ / update_rate_;
 
     if (joy_->accel()) {
-      target_velocity_ += velocity_gain_;
+      target_velocity_ += velocity_step;
       target_velocity_ = std::min(target_velocity_, (max_velocity_));
     }
 
     if (joy_->brake()) {
-      target_velocity_ -= velocity_gain_;
+      target_velocity_ -= brake_step;
       target_velocity_ = std::max(target_velocity_, (0.0));
     }
   }
@@ -280,34 +328,42 @@ void AutowareJoyControllerNode::publishControlCommand() {
     }
   }
 
-  if (emergency_request_.emergency) {
-    cmd.longitudinal.velocity = 0;
-    cmd.longitudinal.acceleration = 0;
-    target_velocity_ = 0;
+  // Without the dead man's switch held, nothing can accumulate a target
+  // velocity that the vehicle would execute later (e.g. when it switches to
+  // autonomous mode).
+  if (emergency_request_.emergency ||
+      (require_deadman_ && !joy_->deadman())) {
+    resetVelocity();
   }
+}
+
+void AutowareJoyControllerNode::resetVelocity() {
+  cmd.longitudinal.velocity = 0;
+  cmd.longitudinal.acceleration = 0;
+  target_velocity_ = 0;
+}
+
+void AutowareJoyControllerNode::publishControlCommand() {
+  cmd.stamp = this->now();
   pub_control_command_->publish(cmd);
 }
 
-void AutowareJoyControllerNode::publishShift() {
+void AutowareJoyControllerNode::publishEmergency() {
+  emergency_request_.stamp = this->now();
+  pub_vehicle_emergency_->publish(emergency_request_);
+}
+
+void AutowareJoyControllerNode::publishShift(const GearShiftType &shift) {
   autoware_vehicle_msgs::msg::GearCommand gear_cmd_;
 
   gear_shift.stamp = this->now();
 
-  if (joy_->shift_up()) {
-    gear_shift.gear_shift.data = getUpperShift(prev_shift_);
+  // A gear change must never set the vehicle in motion: drop any target
+  // velocity carried over from the previous gear.
+  if (shift != gear_shift.gear_shift.data) {
+    resetVelocity();
   }
-
-  if (joy_->shift_down()) {
-    gear_shift.gear_shift.data = getLowerShift(prev_shift_);
-  }
-
-  if (joy_->shift_drive()) {
-    gear_shift.gear_shift.data = GearShift::DRIVE;
-  }
-
-  if (joy_->shift_reverse()) {
-    gear_shift.gear_shift.data = GearShift::REVERSE;
-  }
+  gear_shift.gear_shift.data = shift;
 
   RCLCPP_INFO(get_logger(), "GearShift::%s",
               getShiftName(gear_shift.gear_shift.data));
@@ -406,11 +462,9 @@ void AutowareJoyControllerNode::publishHeartbeat() {
 }
 
 void AutowareJoyControllerNode::sendEmergencyRequest(bool emergency) {
-  RCLCPP_INFO(get_logger(), "%s emergency stop",
-              emergency_request_.emergency ? "Set" : "Clear");
-  (void)emergency;
+  RCLCPP_INFO(get_logger(), "%s emergency stop", emergency ? "Set" : "Clear");
   emergency_request_.stamp = this->now();
-  emergency_request_.emergency = !emergency_request_.emergency;
+  emergency_request_.emergency = emergency;
   pub_vehicle_emergency_->publish(emergency_request_);
 }
 
@@ -448,17 +502,30 @@ void AutowareJoyControllerNode::initTimer(double period_s) {
       std::bind(&AutowareJoyControllerNode::onTimer, this));
 }
 
+void AutowareJoyControllerNode::initPublishTimer(double period_s) {
+  const auto period_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::duration<double>(period_s));
+  publish_timer_ = rclcpp::create_timer(
+      this, get_clock(), period_ns,
+      std::bind(&AutowareJoyControllerNode::onPublishTimer, this));
+}
+
 AutowareJoyControllerNode::AutowareJoyControllerNode(
     const rclcpp::NodeOptions &node_options)
     : Node("autoware_joy_controller", node_options) {
   // Parameter
   joy_type_ = declare_parameter<std::string>("joy_type");
   update_rate_ = declare_parameter<double>("update_rate");
+  publish_rate_ = declare_parameter<double>("publish_rate", 33.0);
+  require_deadman_ = declare_parameter<bool>("require_deadman", true);
   steer_ratio_ = declare_parameter<double>("steer_ratio");
   steer_rate_ = declare_parameter<double>("steer_rate");
+  steer_expo_ = declare_parameter<double>("steer_expo", 0.5);
+  steer_time_constant_ = declare_parameter<double>("steer_time_constant", 0.15);
   steering_angle_velocity_ =
       declare_parameter<double>("steering_angle_velocity");
   velocity_gain_ = declare_parameter<double>("control_command.velocity_gain");
+  brake_gain_ = declare_parameter<double>("control_command.brake_gain", 0.75);
 
   max_velocity_ = declare_parameter<double>("control_command.max_velocity");
   accel_smoothing_factor_ =
@@ -504,6 +571,7 @@ AutowareJoyControllerNode::AutowareJoyControllerNode(
 
   // Timer
   initTimer(1.0 / update_rate_);
+  initPublishTimer(1.0 / publish_rate_);
 }
 } // namespace autoware::joy_controller
 

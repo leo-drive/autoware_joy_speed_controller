@@ -48,6 +48,10 @@ public:
   virtual bool vehicle_engage() const = 0;
   virtual bool vehicle_disengage() const = 0;
 
+  // Dead man's switch: the vehicle may only move while this returns true.
+  // Controllers without a dedicated button report it as always held.
+  virtual bool deadman() const { return true; }
+
   virtual ~JoyConverterBase() = default;
 };
 }  // namespace autoware::joy_controller

@@ -53,12 +53,17 @@ private:
   // Parameter
   std::string joy_type_;
   double update_rate_;
+  double publish_rate_;
   double steer_ratio_;
   double steer_rate_;
+  double steer_expo_;
+  double steer_time_constant_;
   double steering_angle_velocity_;
+  bool require_deadman_;
 
   // ControlCommand Parameter
   double velocity_gain_;
+  double brake_gain_;
   double max_velocity_;
   double accel_smoothing_factor_;
   double decel_smoothing_factor_;
@@ -79,6 +84,7 @@ private:
 
   rclcpp::Time last_joy_received_time_;
   std::shared_ptr<const JoyConverterBase> joy_;
+  std::shared_ptr<const JoyConverterBase> prev_joy_;
   geometry_msgs::msg::TwistStamped::ConstSharedPtr twist_;
 
   void onJoy();
@@ -108,8 +114,12 @@ private:
   rclcpp::Publisher<autoware_vehicle_msgs::msg::Engage>::SharedPtr
       pub_autoware_engage_;
 
+  void updateControlCommand();
+  void updateSteering();
   void publishControlCommand();
-  void publishShift();
+  void publishEmergency();
+  void publishShift(const GearShiftType &shift);
+  void resetVelocity();
   void publishTurnSignal();
   void publishGateMode();
   void publishHeartbeat();
@@ -131,10 +141,13 @@ private:
 
   // Timer
   rclcpp::TimerBase::SharedPtr timer_;
+  rclcpp::TimerBase::SharedPtr publish_timer_;
   void initTimer(double period_s);
+  void initPublishTimer(double period_s);
 
   bool isDataReady();
   void onTimer();
+  void onPublishTimer();
 
   double set_steering_angle_{};
   double target_steering_angle_{};

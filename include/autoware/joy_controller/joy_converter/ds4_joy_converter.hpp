@@ -46,8 +46,9 @@ public:
 
   bool shift_up() const { return CursorUpDown() == 1.0f; }
   bool shift_down() const { return CursorUpDown() == -1.0f; }
-  bool shift_drive() const { return CursorLeftRight() == 1.0f; }
-  bool shift_reverse() const { return CursorLeftRight() == -1.0f; }
+  // sensor_msgs/Joy reports D-pad left as +1 and right as -1
+  bool shift_drive() const { return CursorLeftRight() == -1.0f; }
+  bool shift_reverse() const { return CursorLeftRight() == 1.0f; }
 
   bool turn_signal_left() const { return L1(); }
   bool turn_signal_right() const { return R1(); }
@@ -63,6 +64,8 @@ public:
 
   bool vehicle_engage() const { return !reverse() && Triangle(); }
   bool vehicle_disengage() const { return reverse() && Triangle(); }
+
+  bool deadman() const { return R2(); }
 
 private:
   float LStickLeftRight() const { return j_.axes.at(0); }
