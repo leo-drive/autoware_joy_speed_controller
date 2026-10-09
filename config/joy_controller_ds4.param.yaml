@@ -2,11 +2,16 @@
   ros__parameters:
     joy_type: DS4
     update_rate: 10.0
-    steer_ratio: 250.0
-    steer_rate: 25.0
+    publish_rate: 33.0
+    require_deadman: true
+    steer_ratio: 0.5
+    steer_rate: 0.3
+    steer_expo: 0.5
+    steer_time_constant: 0.15
     steering_angle_velocity: 45.0
     control_command:
-      velocity_gain: 0.25
-      max_velocity: 10.0
+      velocity_gain: 0.4
+      brake_gain: 0.75
+      max_velocity: 2.5
       accel_smooth_factor : 0.5
       decel_smooth_factor : 0.8
