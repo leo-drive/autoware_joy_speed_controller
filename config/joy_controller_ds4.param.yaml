@@ -10,8 +10,8 @@
     steer_time_constant: 0.15
     steering_angle_velocity: 45.0
     control_command:
-      velocity_gain: 0.25
+      velocity_gain: 0.4
       brake_gain: 0.75
-      max_velocity: 10.0
+      max_velocity: 2.5
       accel_smooth_factor : 0.5
       decel_smooth_factor : 0.8
