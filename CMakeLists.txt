@@ -13,8 +13,14 @@ rclcpp_components_register_node(autoware_joy_speed_controller_node
   EXECUTABLE autoware_joy_speed_controller
 )
 
+install(PROGRAMS
+  scripts/cloud_joy_bridge.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 ament_auto_package(
   INSTALL_TO_SHARE
   launch
   config
+  web
 )
